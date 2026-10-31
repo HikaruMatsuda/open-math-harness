@@ -66,4 +66,24 @@ fn serve_boots_answers_the_window_and_stops_cleanly_on_sigterm() {
         status.is_some()
     }));
     assert!(status.unwrap().success(), "a signalled shutdown is clean: {status:?}");
+
+    // A fresh runtime reads the same durable history through the UI boundary.
+    let mut restarted =
+        Command::new(binaries().ui.with_file_name("nucleus")).arg("serve").arg(&path).spawn().unwrap();
+    let mut stream = None;
+    assert!(wait_for(TIMEOUT, || {
+        stream = UnixStream::connect(&socket).ok();
+        stream.is_some()
+    }));
+    let mut stream = stream.unwrap();
+    writeln!(stream, "{}", json!({"id": 4, "op": "conversation.history", "session": "default"})).unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).unwrap();
+    let history: Value = serde_json::from_str(&line).unwrap();
+    assert!(
+        history["ok"]["records"].as_array().unwrap().iter().any(|record| record["text"] == "hello"),
+        "{history}"
+    );
+    assert!(Command::new("kill").args(["-TERM", &restarted.id().to_string()]).status().unwrap().success());
+    assert!(wait_for(TIMEOUT, || restarted.try_wait().unwrap().is_some()));
 }
