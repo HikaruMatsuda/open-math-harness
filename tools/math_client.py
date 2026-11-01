@@ -31,6 +31,10 @@ def main():
     mkdir.add_argument('path')
     commands.add_parser('sessions')
     commands.add_parser('live-sessions')
+    commands.add_parser('diffs', help="list the project repository's uncommitted changes source")
+    diff = commands.add_parser('diff', help='list the changed files of a project repository')
+    diff.add_argument('repository')
+    diff.add_argument('--after', help='pagination cursor')
     start = commands.add_parser('start')
     start.add_argument('--model')
     commands.add_parser('stop')
@@ -56,6 +60,12 @@ def main():
         request = {'op': 'conversation.list', 'project': args.project}
     elif args.command == 'live-sessions':
         request = {'op': 'sessions.list'}
+    elif args.command == 'diffs':
+        request = {'op': 'diffs.repositories', 'project': args.project}
+    elif args.command == 'diff':
+        request = {'op': 'diffs.changes', 'project': args.project, 'repository': args.repository}
+        if args.after is not None:
+            request['after'] = args.after
     elif args.command in ('start', 'stop'):
         request = {'op': 'sessions.create' if args.command == 'start' else 'sessions.stop',
                    'project': args.project, 'session': args.session}

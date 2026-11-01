@@ -29,8 +29,13 @@ projects service like `shell`: the project repository's `.skill/` directory and
 published catalogues, which it downloads itself. Approvals are not part of it:
 the guard's decision needs a window holding `decide`, which this composition's
 UI does not have; deletion stays unavailable, not unguarded. Background jobs
-(`shell`'s `background`) are not part of it either: they need the jobs endpoint,
-which the projects service serves only with `conversation wake`.
+are part of it: the projects service serves `jobs` (`--jobs jobs-state/`) with a
+`conversation wake` grant, so an agent may start a command in the background and
+a person may move a running one there (`jobs.background`). A job's record and log
+stay in the projects service's state directory; its end reaches the session's
+next agent as a reminder, never by resuming stopped work. `diffs` is a host of
+the projects service too: the window's Review reads the uncommitted changes of
+the project repository (observations only; it never writes the repository).
 
 The model adapter is the existing OpenRouter-shaped one; it may reach only the
 base URL it is given. Which model it may run is the sessions grant, and the
@@ -130,7 +135,7 @@ def main():
     os.set_inheritable(lock, True)
     try:
         for name in ('projects', 'home', 'sessions', 'ui', 'data', 'data/work', 'logs', 'secrets',
-                     'memories', 'memory-state'):
+                     'memories', 'memory-state', 'jobs-state'):
             private_dir(state / name)
     except ValueError as exc:
         parser.error(str(exc))
@@ -172,6 +177,7 @@ def main():
                              binds=[bind(state / 'sessions', '/sessions', True)]),
         'projects': dict(executable=executable('projects'),
                          args=['--root', '/projects', '--home', '/home', '--programs', '/programs',
+                               '--jobs', '/jobs',
                                '--skills-catalog', 'https://skills.openmathmodel.org/index.json',
                                '--env', 'PATH=/usr/local/bin:/usr/bin:/bin'] +
                               (['--env', 'LEAN_PATH=' + lean] if lean else []) +
@@ -179,8 +185,10 @@ def main():
                                '--shell-arg', '--default-timeout-ms', '--shell-arg', '25000',
                                '--shell-arg', '--description', '--shell-arg', shell_description],
                          binds=[bind(state / 'projects', '/projects', True), bind(state / 'home', '/home', True),
+                                bind(state / 'jobs-state', '/jobs', True),
                                 bind(executable('project'), '/programs/nucleus-project'),
                                 bind(executable('shell'), '/programs/nucleus-shell'),
+                                bind(executable('diffs'), '/programs/nucleus-diffs'),
                                 bind(executable('skills'), '/programs/nucleus-skills')],
                          # A sandboxed child cannot claim more network than its spawner,
                          # and the shell host is such a child here. In the deployed
@@ -219,6 +227,7 @@ def main():
                                '--child-arg', '--max-steps', '--child-arg', args.max_steps,
                                '--projects', '/projects', '--repo-scope', 'fs',
                                '--repo-scope', 'shell', '--repo-scope', 'skills',
+                               '--session-scope', 'jobs',
                                '--tool-bindings', json.dumps([
                                    dict(service='fs', endpoint='fs', env='local',
                                         resource=['projects'],
@@ -245,8 +254,11 @@ def main():
             grant('kernel', ['provide'], ['endpoint', 'files']),
             grant('kernel', ['provide'], ['endpoint', 'shell']),
             grant('kernel', ['provide'], ['endpoint', 'skills']),
+            grant('kernel', ['provide'], ['endpoint', 'jobs']),
+            grant('kernel', ['provide'], ['endpoint', 'diffs']),
             grant('kernel', ['create_endpoint'], ['endpoint'], True),
-            grant('kernel', ['spawn_executable'], ['executable', 'programs'])]),
+            grant('kernel', ['spawn_executable'], ['executable', 'programs']),
+            grant('conversation', ['wake'], [])]),
         dict(program='fs', provides='fs',
              grants=[grant('kernel', ['provide'], ['endpoint', 'fs'])]),
         dict(program='model', provides='model',
@@ -272,12 +284,15 @@ def main():
             grant('shell', ['exec'], ['projects'], True),
             grant('skills', ['list', 'load'], ['projects'], True),
             grant('memory', ['index', 'used', 'remember'], [], True),
-            grant('web', ['fetch', 'curl'], [], True)]),
+            grant('web', ['fetch', 'curl'], [], True),
+            grant('jobs', ['register', 'list', 'output', 'stop'], [], True)]),
         dict(program='ui', grants=[
             grant('conversation', ['say', 'history', 'wait', 'list', 'ensure'], []),
             grant('sessions', ['create', 'stop', 'list'], []),
             grant('projects', ['list', 'create'], ['projects']),
-            grant('files', ['list', 'mkdir', 'upload', 'download'], ['projects'])]),
+            grant('files', ['list', 'mkdir', 'upload', 'download'], ['projects']),
+            grant('diffs', ['repositories', 'changes', 'file'], ['projects']),
+            grant('jobs', ['background'], [])]),
     ])
     config_path = state / 'chat-config.json'
     fd, tmp = tempfile.mkstemp(prefix='.chat-config-', dir=state)
