@@ -123,6 +123,13 @@ def main():
     source = script.read_text(encoding='utf-8')
     subprocess.run(['limactl', 'shell', args.vm, 'bash', '-lc',
                     f'cd {shlex.quote(repo)} && cat > tools/local_chat.py'], input=source, text=True, check=True)
+    problems = HERE / 'local_problems'
+    if problems.is_dir():
+        archive = subprocess.run(['tar', '-c', '-C', str(problems), '.'],
+                                 stdout=subprocess.PIPE, check=True).stdout
+        subprocess.run(['limactl', 'shell', args.vm, 'bash', '-lc',
+                        f'cd {shlex.quote(repo)} && mkdir -p tools/local_problems && tar -x -C tools/local_problems'],
+                       input=archive, check=True)
     if not running:
         arguments = ' '.join([
             '/usr/bin/python3 tools/local_chat.py',
