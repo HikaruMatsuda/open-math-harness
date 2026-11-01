@@ -8,9 +8,14 @@ agent works in its project's repository: the `fs` grant reaches the projects
 and the sessions service narrows it to `["projects", <project>, "repo"]`, so
 the agent reads and writes the files the window shows, and nothing else of the
 project folder. Projects, file management and history are the same services
-the workspace composition uses. Shell, approvals, skills, memory and web are
-not part of it: the agent has no such capability and no process it starts can
-reach one.
+the workspace composition uses. `shell` is the projects service's shell host:
+because this composition runs no projects' Linux user (`--identities` is off),
+the host is a sandboxed child of that service, started per call as the runtime's
+own user, in the project folder, with the VM's `/usr` read-only, its own `/tmp`,
+the shared home writable and the VM's network. It is a shell for running tools,
+not an unrestricted one: `/opt` and the rest of the VM's filesystem are not in it.
+Approvals, skills, memory, web and lean are not part of it: the agent has no
+such capability and no process it starts can reach one.
 
 The model adapter is the existing OpenRouter-shaped one; it may reach only the
 base URL it is given. Which model it may run is the sessions grant, and the
@@ -29,6 +34,18 @@ from pathlib import Path
 
 def grant(endpoint, actions, resource, delegable=False):
     return dict(endpoint=endpoint, actions=actions, resource=resource, delegable=delegable)
+
+
+SHELL_DESCRIPTION = (
+    'Runs in this VM, inside a sandbox, in this session\'s project repository: the '
+    'repo/ directory shown in Files and the base of relative chat file links. A command '
+    'starts there and is an ordinary process of the runtime\'s own user, limited by the '
+    'sandbox: /usr is read-only, /tmp is the sandbox\'s own, the project folder and the '
+    'shared home (HOME, where tools may be installed) are writable, and nothing else of '
+    'the VM\'s filesystem is present. It has the VM\'s network, unfiltered, and no sudo. '
+    'Commands stop after 25 s unless timeout_ms is given; pass it for Lean and other '
+    'long commands.'
+)
 
 
 def provider_of(model_id):
@@ -107,9 +124,21 @@ def main():
         'conversation': dict(executable=executable('conversation'), args=['--root', '/sessions'],
                              binds=[bind(state / 'sessions', '/sessions', True)]),
         'projects': dict(executable=executable('projects'),
-                         args=['--root', '/projects', '--home', '/home', '--programs', '/programs'],
+                         args=['--root', '/projects', '--home', '/home', '--programs', '/programs',
+                               '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
+                               '--shell-arg', '--max-timeout-ms', '--shell-arg', '900000',
+                               '--shell-arg', '--default-timeout-ms', '--shell-arg', '25000',
+                               '--shell-arg', '--description', '--shell-arg', SHELL_DESCRIPTION],
                          binds=[bind(state / 'projects', '/projects', True), bind(state / 'home', '/home', True),
-                                bind(executable('project'), '/programs/nucleus-project')]),
+                                bind(executable('project'), '/programs/nucleus-project'),
+                                bind(executable('shell'), '/programs/nucleus-shell')],
+                         # A sandboxed child cannot claim more network than its spawner,
+                         # and the shell host is such a child here. In the deployed
+                         # composition the shell's network is the project's user's and
+                         # this service has none; here the grant has to sit on the
+                         # spawner instead. It adds nothing the service could not already
+                         # reach through the shell it starts.
+                         network=True),
         'fs': dict(executable=executable('fs'),
                    args=['--root', '/data', '--access-log', '/log/access.jsonl'],
                    binds=[bind(state / 'data', '/data', True),
@@ -126,12 +155,16 @@ def main():
                                '--child-arg', '--model', '--child-arg', args.model,
                                '--child-arg', '--max-steps', '--child-arg', args.max_steps,
                                '--projects', '/projects', '--repo-scope', 'fs',
-                               '--tool-bindings', json.dumps([dict(
-                                   service='fs', endpoint='fs', env='local',
-                                   resource=['projects'],
-                                   description='The session project files. Paths are relative to '
-                                               'the repository root shown in Files, which is also '
-                                               'the working directory.')])],
+                               '--repo-scope', 'shell',
+                               '--tool-bindings', json.dumps([
+                                   dict(service='fs', endpoint='fs', env='local',
+                                        resource=['projects'],
+                                        description='The session project files. Paths are relative '
+                                                    'to the repository root shown in Files, which is '
+                                                    'also the working directory.'),
+                                   dict(service='shell', endpoint='shell', env='local',
+                                        resource=['projects'],
+                                        description=SHELL_DESCRIPTION)])],
                          binds=[bind(binaries, '/programs'), bind(state / 'projects', '/projects', True)]),
         'ui': dict(executable=executable('ui'), args=['--socket', '/ui/ui.sock'],
                    binds=[bind(state / 'ui', '/ui', True)]),
@@ -142,6 +175,7 @@ def main():
         dict(program='projects', provides='projects', grants=[
             grant('kernel', ['provide'], ['endpoint', 'projects']),
             grant('kernel', ['provide'], ['endpoint', 'files']),
+            grant('kernel', ['provide'], ['endpoint', 'shell']),
             grant('kernel', ['create_endpoint'], ['endpoint'], True),
             grant('kernel', ['spawn_executable'], ['executable', 'programs'])]),
         dict(program='fs', provides='fs',
@@ -155,7 +189,8 @@ def main():
                   True),
             grant('conversation', ['clear_reminders', 'list'], []),
             grant('model', ['complete', 'start'], [provider], True),
-            grant('fs', ['read', 'list', 'create', 'append'], ['projects'], True)]),
+            grant('fs', ['read', 'list', 'create', 'append'], ['projects'], True),
+            grant('shell', ['exec'], ['projects'], True)]),
         dict(program='ui', grants=[
             grant('conversation', ['say', 'history', 'wait', 'list', 'ensure'], []),
             grant('sessions', ['create', 'stop', 'list'], []),
