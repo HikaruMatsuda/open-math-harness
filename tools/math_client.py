@@ -105,20 +105,59 @@ def main():
             parser.error(str(exc))
     request.setdefault('id', 1)
     bridge = Path(__file__).with_name('lima_ui_bridge.py')
+    if args.command == 'say':
+        started, failure = ensure_started(bridge, args)
+        if failure is not None:
+            print(json.dumps(failure, ensure_ascii=False, indent=2))
+            return 1
+        if started:
+            print('session was not live; started it first', file=sys.stderr)
+    response, failure = send(bridge, args, request)
+    if failure is not None:
+        print(json.dumps(failure, ensure_ascii=False, indent=2))
+        return 1
+    print(json.dumps(response, ensure_ascii=False, indent=2))
+    return 1 if 'error' in response or 'ok' not in response else 0
+
+
+def send(bridge, args, request):
+    """Send one request; return (response, failure) and never retry a mutation."""
     result = subprocess.run([sys.executable, str(bridge), '--vm', args.vm, args.socket],
                             input=json.dumps(request, ensure_ascii=False) + '\n', text=True,
                             stdout=subprocess.PIPE, check=False)
     if result.returncode:
-        return result.returncode
+        return None, {'error': {'code': 'bridge_failed',
+                                'message': f'bridge exited with status {result.returncode}'}}
     try:
         response = json.loads(result.stdout)
         if response.get('id') != request['id']:
             raise ValueError('response ID does not match request')
     except (ValueError, AttributeError) as exc:
-        print(f'invalid UI response: {exc}', file=sys.stderr)
-        return 1
-    print(json.dumps(response, ensure_ascii=False, indent=2))
-    return 1 if 'error' in response or 'ok' not in response else 0
+        return None, {'error': {'code': 'invalid_response', 'message': str(exc)}}
+    return response, None
+
+
+def ensure_started(bridge, args):
+    """Start the session only when the UI does not list it as live.
+
+    Returns (started, failure). A session that is already live is left alone so
+    that saying something cannot restart the process answering an earlier turn.
+    """
+    listed, failure = send(bridge, args, {'op': 'sessions.list', 'id': 1})
+    if failure is not None:
+        return False, failure
+    if 'error' in listed or 'ok' not in listed:
+        return False, listed
+    for session in listed['ok'].get('sessions', []):
+        if session.get('name') == args.session and session.get('project') == args.project:
+            return False, None
+    started, failure = send(bridge, args, {'op': 'sessions.create', 'id': 1,
+                                           'project': args.project, 'session': args.session})
+    if failure is not None:
+        return False, failure
+    if 'error' in started or 'ok' not in started:
+        return False, started
+    return True, None
 
 
 if __name__ == '__main__':
