@@ -73,6 +73,8 @@ def main():
     parser.add_argument('--repo', default='~/open-math-harness', help='repository checkout inside the VM')
     parser.add_argument('--bin-dir', default='target/debug', help='built programs inside the VM checkout')
     parser.add_argument('--unit', default='open-math-chat', help='systemd --user unit that keeps the composition')
+    parser.add_argument('--memory-quiet-ms', default='300000',
+                        help='how long a session must be quiet before its memories are extracted')
     parser.add_argument('--status', action='store_true', help='report what is running; start nothing')
     parser.add_argument('--stop', action='store_true', help='stop the composition and the tunnel; start nothing')
     args = parser.parse_args()
@@ -128,6 +130,7 @@ def main():
             '--state-dir', shlex.quote(state),
             '--model-base-url', shlex.quote(args.model_base_url),
             '--model', shlex.quote(args.model),
+            '--memory-quiet-ms', shlex.quote(args.memory_quiet_ms),
         ])
         command = (f'cd {shlex.quote(repo)} && systemd-run --user --unit={shlex.quote(unit)} --collect '
                    f'--working-directory={shlex.quote(repo)} {arguments}')
