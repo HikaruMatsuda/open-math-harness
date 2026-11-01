@@ -30,7 +30,9 @@ extracts what a quiet session leaves, consolidates it into that project's
 `memories/` and its job stores `memory-state/`, and it may reach the model for
 its own calls. `web` fetches URLs for the agent. `skills` is a host of the
 projects service like `shell`: the project repository's `.skill/` directory and
-published catalogues, which it downloads itself. Approvals are part of it: the
+published catalogues, which it downloads itself. `pdf` is a host of the projects
+service like `shell`: the agent reads the text of a PDF in its repository with
+one `extract`, holding no file authority of its own. Approvals are part of it: the
 `approvals` guard holds `fs remove` over the projects (the sessions service only
 holds `request`), its policy asks a person for every removal, and the UI holds
 `list` and `decide` on `[]`, so deleting one file waits for a decision made in
@@ -248,6 +250,10 @@ def main():
              resource=['projects'],
              description='The session project files. Paths are relative to the repository root '
                          'shown in Files, which is also the working directory.'),
+        dict(service='pdf', endpoint='pdf', env='local',
+             resource=['projects'],
+             description='The text of a PDF in the project repository, page by page, each page '
+                         'after its marker. Text only: a scanned PDF yields little.'),
         dict(service='shell', endpoint='shell', env='local',
              resource=['projects'],
              description=shell_description),
@@ -277,6 +283,7 @@ def main():
                                 bind(executable('project'), '/programs/nucleus-project'),
                                 bind(executable('shell'), '/programs/nucleus-shell'),
                                 bind(executable('diffs'), '/programs/nucleus-diffs'),
+                                bind(executable('pdf'), '/programs/nucleus-pdf'),
                                 bind(executable('skills'), '/programs/nucleus-skills')],
                          # A sandboxed child cannot claim more network than its spawner,
                          # and the shell host is such a child here. In the deployed
@@ -320,7 +327,7 @@ def main():
                                '--child-arg', '--max-steps', '--child-arg', args.max_steps,
                                '--projects', '/projects', '--repo-scope', 'fs',
                                '--repo-scope', 'shell', '--repo-scope', 'skills',
-                               '--repo-scope', 'approvals',
+                               '--repo-scope', 'pdf', '--repo-scope', 'approvals',
                                '--session-scope', 'jobs',
                                '--tool-bindings', json.dumps(tool_bindings)],
                          binds=[bind(binaries, '/programs'), bind(state / 'projects', '/projects', True)]),
@@ -348,6 +355,7 @@ def main():
             grant('kernel', ['provide'], ['endpoint', 'skills']),
             grant('kernel', ['provide'], ['endpoint', 'jobs']),
             grant('kernel', ['provide'], ['endpoint', 'diffs']),
+            grant('kernel', ['provide'], ['endpoint', 'pdf']),
             grant('kernel', ['create_endpoint'], ['endpoint'], True),
             grant('kernel', ['spawn_executable'], ['executable', 'programs']),
             grant('conversation', ['wake'], [])]),
@@ -380,6 +388,7 @@ def main():
             grant('fs', ['read', 'list', 'create', 'append'], ['projects'], True),
             grant('shell', ['exec'], ['projects'], True),
             grant('skills', ['list', 'load'], ['projects'], True),
+            grant('pdf', ['extract'], ['projects'], True),
             grant('memory', ['index', 'used', 'remember'], [], True),
             grant('web', ['fetch', 'curl'], [], True),
             grant('approvals', ['request'], ['fs', 'projects'], True),
