@@ -101,7 +101,7 @@ def main():
     unit_state = vm_run(args.vm, f'systemctl --user is-active {shlex.quote(unit)}', check=False).stdout.strip()
     if args.stop:
         vm_run(args.vm, f'systemctl --user stop {shlex.quote(unit)}', check=False)
-        subprocess.run(['pkill', '-f', f'-R {host}:{port}:{host}:{port}'], check=False)
+        subprocess.run(['pkill', '-f', f'[-]R {host}:{port}:{host}:{port}'], check=False)
         print(json.dumps({'running': False, 'unit': unit}, indent=2))
         return 0
     if args.status:

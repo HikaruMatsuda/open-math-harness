@@ -3,10 +3,14 @@
 
 It adds to the workspace-only composition a `model` service and the `sessions`
 service that starts one chat agent per session, so a window can hold a real
-conversation, and the agent may read and write `work/` through `fs`. Projects,
-file management and history are the same services the workspace composition
-uses. Shell, approvals, skills, memory and web are not part of it: the agent
-has no such capability and no process it starts can reach one.
+conversation. With `--projects /projects` and `--repo-scope fs`, each session's
+agent works in its project's repository: the `fs` grant reaches the projects
+and the sessions service narrows it to `["projects", <project>, "repo"]`, so
+the agent reads and writes the files the window shows, and nothing else of the
+project folder. Projects, file management and history are the same services
+the workspace composition uses. Shell, approvals, skills, memory and web are
+not part of it: the agent has no such capability and no process it starts can
+reach one.
 
 The model adapter is the existing OpenRouter-shaped one; it may reach only the
 base URL it is given. Which model it may run is the sessions grant, and the
@@ -108,7 +112,9 @@ def main():
                                 bind(executable('project'), '/programs/nucleus-project')]),
         'fs': dict(executable=executable('fs'),
                    args=['--root', '/data', '--access-log', '/log/access.jsonl'],
-                   binds=[bind(state / 'data', '/data', True), bind(state / 'logs', '/log', True)]),
+                   binds=[bind(state / 'data', '/data', True),
+                          bind(state / 'projects', '/data/projects', True),
+                          bind(state / 'logs', '/log', True)]),
         'model': dict(executable=executable('openrouter'),
                       args=['--key-file', '/secrets/key', '--base-url', args.model_base_url,
                             '--max-timeout-ms', '300000'],
@@ -118,8 +124,15 @@ def main():
         'sessions': dict(executable=executable('chat-agent'),
                          args=['--child-executable', '/programs/nucleus-chat-agent',
                                '--child-arg', '--model', '--child-arg', args.model,
-                               '--child-arg', '--max-steps', '--child-arg', args.max_steps],
-                         binds=[bind(binaries, '/programs')]),
+                               '--child-arg', '--max-steps', '--child-arg', args.max_steps,
+                               '--projects', '/projects', '--repo-scope', 'fs',
+                               '--tool-bindings', json.dumps([dict(
+                                   service='fs', endpoint='fs', env='local',
+                                   resource=['projects'],
+                                   description='The session project files. Paths are relative to '
+                                               'the repository root shown in Files, which is also '
+                                               'the working directory.')])],
+                         binds=[bind(binaries, '/programs'), bind(state / 'projects', '/projects', True)]),
         'ui': dict(executable=executable('ui'), args=['--socket', '/ui/ui.sock'],
                    binds=[bind(state / 'ui', '/ui', True)]),
     }
@@ -142,7 +155,7 @@ def main():
                   True),
             grant('conversation', ['clear_reminders', 'list'], []),
             grant('model', ['complete', 'start'], [provider], True),
-            grant('fs', ['read', 'list', 'create', 'append'], ['work'], True)]),
+            grant('fs', ['read', 'list', 'create', 'append'], ['projects'], True)]),
         dict(program='ui', grants=[
             grant('conversation', ['say', 'history', 'wait', 'list', 'ensure'], []),
             grant('sessions', ['create', 'stop', 'list'], []),
