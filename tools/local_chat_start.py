@@ -10,8 +10,10 @@ systemd --user unit. The socket path it prints is what `math_client.py --socket`
   local_chat_start.py --status   report without starting anything
   local_chat_start.py --stop     stop the composition and close the tunnel
 
-`--status` reports `running`, `unit`, `unit_active` and `gateway_reachable`; all
-three of the first two being true means the documented client commands work.
+`--status` reports `running`, `socket_ready`, `unit`, `unit_active` and
+`gateway_reachable`. `socket_ready` and `gateway_reachable` true means the documented client
+commands work; `running` alone only says the process exists. After a start it waits for the
+socket, which appears about half a minute later, instead of reporting the path too early.
 
 A unit installed as a file (`~/.config/systemd/user/<unit>.service`, enabled with
 linger) survives a VM restart and is started with `systemctl --user start`. When no
@@ -22,6 +24,10 @@ which lives only until the VM stops. `--unit` names it; the default is
 Inside the VM, state (history, projects, approvals) lives in `~/open-math-run/chat`
 and survives a restart; the composition is only ever replaced by an explicit
 start, never restarted underneath a running session.
+
+`--stop` also cancels the reverse forward: Lima's shared SSH connection keeps it, so it is
+cancelled with `ssh -O cancel` rather than by killing the process that asked for it. Left
+open, it would keep the model gateway reachable from the VM after the composition stopped.
 
 The gateway URL must be a loopback address on the Mac: the tunnel exposes it to
 the VM's loopback only, never to the VM's network interfaces. The model id is
@@ -71,6 +77,23 @@ def gateway_reachable(vm, url):
     result = vm_run(vm, f'curl -sS -m 5 -o /dev/null -w "%{{http_code}}" {shlex.quote(url + "/models")}',
                     check=False)
     return result.returncode == 0 and result.stdout.strip() in ('200', '401', '403')
+
+
+def close_tunnel(vm, host, port):
+    """Close the reverse forward, including one held by the VM's shared SSH connection.
+
+    Lima's ssh.config sets ControlMaster auto with ControlPersist, so `-N -R` attaches the
+    forward to that shared master and the launched client becomes a mux process whose
+    command line no longer names the forward. `pkill` therefore cannot find it; `-O cancel`
+    removes it from the master. Without that, a stopped composition would keep the model
+    gateway reachable from the VM's loopback.
+    """
+    forward = f'{host}:{port}:{host}:{port}'
+    config = ssh_config(vm)
+    if config is not None:
+        subprocess.run(['ssh', '-F', str(config), '-O', 'cancel', '-R', forward, f'lima-{vm}'],
+                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    subprocess.run(['pkill', '-f', f'[-]R {forward}'], check=False)
 
 
 def unit_installed(vm, unit):
@@ -130,15 +153,18 @@ def main():
     status = vm_run(args.vm, f'if pgrep -f {shlex.quote(process_pattern)} > /dev/null; '
                              f'then echo up; else echo down; fi', check=False)
     running = status.stdout.strip() == 'up'
+    socket_ready = vm_run(args.vm, f'if [ -S {shlex.quote(shown_socket)} ]; then echo yes; else echo no; fi',
+                          check=False).stdout.strip() == 'yes'
     unit = args.unit
     unit_state = vm_run(args.vm, f'systemctl --user is-active {shlex.quote(unit)}', check=False).stdout.strip()
     if args.stop:
         vm_run(args.vm, f'systemctl --user stop {shlex.quote(unit)}', check=False)
-        subprocess.run(['pkill', '-f', f'[-]R {host}:{port}:{host}:{port}'], check=False)
-        print(json.dumps({'running': False, 'unit': unit}, indent=2))
+        close_tunnel(args.vm, host, port)
+        print(json.dumps({'running': False, 'unit': unit,
+                          'gateway_reachable': gateway_reachable(args.vm, args.model_base_url)}, indent=2))
         return 0
     if args.status:
-        print(json.dumps({'running': running, 'socket': shown_socket,
+        print(json.dumps({'running': running, 'socket': shown_socket, 'socket_ready': socket_ready,
                           'unit': unit, 'unit_active': unit_state,
                           'unit_installed': unit_installed(args.vm, unit),
                           'gateway_reachable': gateway_reachable(args.vm, args.model_base_url)}, indent=2))
@@ -162,36 +188,42 @@ def main():
         subprocess.run(['limactl', 'shell', args.vm, 'bash', '-lc',
                         f'cd {shlex.quote(repo)} && mkdir -p tools/local_problems && tar -x -C tools/local_problems'],
                        input=archive, check=True)
-    if not running:
-        if unit_installed(args.vm, unit):
-            started = vm_run(args.vm, f'systemctl --user start {shlex.quote(unit)}', check=False)
-        else:
-            arguments = ' '.join([
-                '/usr/bin/python3 tools/local_chat.py',
-                '--bin-dir', shlex.quote(args.bin_dir),
-                '--state-dir', shlex.quote(state),
-                '--model-base-url', shlex.quote(args.model_base_url),
-                '--model', shlex.quote(args.model),
-                '--memory-quiet-ms', shlex.quote(args.memory_quiet_ms),
-            ])
-            command = (f'cd {shlex.quote(repo)} && systemd-run --user --unit={shlex.quote(unit)} --collect '
-                       f'--working-directory={shlex.quote(repo)} {arguments}')
-            started = vm_run(args.vm, command, check=False)
-        if started.returncode != 0:
-            print((started.stderr or started.stdout).strip(), file=sys.stderr)
-            return 1
-        for _ in range(30):
-            status = vm_run(args.vm, f'if pgrep -f {shlex.quote(process_pattern)} > /dev/null; '
-                                     f'then echo up; else echo down; fi', check=False)
-            if status.stdout.strip() == 'up':
+    if not socket_ready:
+        started = None
+        if not running:
+            if unit_installed(args.vm, unit):
+                started = vm_run(args.vm, f'systemctl --user start {shlex.quote(unit)}', check=False)
+            else:
+                arguments = ' '.join([
+                    '/usr/bin/python3 tools/local_chat.py',
+                    '--bin-dir', shlex.quote(args.bin_dir),
+                    '--state-dir', shlex.quote(state),
+                    '--model-base-url', shlex.quote(args.model_base_url),
+                    '--model', shlex.quote(args.model),
+                    '--memory-quiet-ms', shlex.quote(args.memory_quiet_ms),
+                ])
+                command = (f'cd {shlex.quote(repo)} && systemd-run --user --unit={shlex.quote(unit)} --collect '
+                           f'--working-directory={shlex.quote(repo)} {arguments}')
+                started = vm_run(args.vm, command, check=False)
+            if started.returncode != 0:
+                print((started.stderr or started.stdout).strip(), file=sys.stderr)
+                return 1
+        # The process appears first; the UI socket it serves is created about half a minute
+        # later, and only then can `math_client.py` connect. Wait for the socket itself.
+        for _ in range(180):
+            socket_ready = vm_run(
+                args.vm, f'if [ -S {shlex.quote(shown_socket)} ]; then echo yes; else echo no; fi',
+                check=False).stdout.strip() == 'yes'
+            if socket_ready:
                 running = True
                 break
-            subprocess.run(['sleep', '0.5'], check=False)
-        if not running:
+            subprocess.run(['sleep', '1'], check=False)
+        if not socket_ready:
             log = vm_run(args.vm, f'journalctl --user -u {shlex.quote(unit)} -n 20 --no-pager', check=False)
             print(log.stdout.strip() or 'the composition did not open its socket', file=sys.stderr)
             return 1
-    print(json.dumps({'running': True, 'socket': shown_socket, 'model': args.model}, indent=2))
+    print(json.dumps({'running': True, 'socket': shown_socket, 'socket_ready': True,
+                      'model': args.model}, indent=2))
     return 0
 
 
