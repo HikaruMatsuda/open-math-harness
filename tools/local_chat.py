@@ -14,8 +14,13 @@ the host is a sandboxed child of that service, started per call as the runtime's
 own user, in the project folder, with the VM's `/usr` read-only, its own `/tmp`,
 the shared home writable and the VM's network. It is a shell for running tools,
 not an unrestricted one: `/opt` and the rest of the VM's filesystem are not in it.
-Approvals, skills, memory, web and lean are not part of it: the agent has no
-such capability and no process it starts can reach one.
+Lean is run through it, not through a `lean` service: when Mathlib is installed
+in the shared home (`home/mathlib4`, with elan's toolchain in `home/.elan`), the
+shells get its `LEAN_PATH` and `lean <file>` elaborates `import Mathlib`. A
+`lean` service would need the frozen problems and the REPL of the deployed
+image, which this composition does not carry. Approvals, skills, memory and web
+are not part of it: the agent has no such capability and no process it starts
+can reach one.
 
 The model adapter is the existing OpenRouter-shaped one; it may reach only the
 base URL it is given. Which model it may run is the sessions grant, and the
@@ -53,6 +58,26 @@ def provider_of(model_id):
     if not provider or not rest:
         raise ValueError('--model must be a provider/model id')
     return provider
+
+
+def lean_path(state):
+    """The `LEAN_PATH` for Mathlib installed in the shared home, or None.
+
+    A Mathlib checkout built there (`mathlib4` with its `.lake` packages) is
+    what a shell needs to elaborate `import Mathlib`; without one the shells
+    get no `LEAN_PATH` and Lean reports the missing modules itself.
+    """
+    root = state / 'home' / 'mathlib4' / '.lake'
+    if not (root / 'build' / 'lib' / 'lean').is_dir():
+        return None
+    guest = '/home/mathlib4/.lake'
+    entries = [guest + '/build/lib/lean']
+    packages = root / 'packages'
+    if packages.is_dir():
+        entries += [f'{guest}/packages/{path.name}/.lake/build/lib/lean'
+                    for path in sorted(packages.iterdir())
+                    if (path / '.lake' / 'build' / 'lib' / 'lean').is_dir()]
+    return ':'.join(entries)
 
 
 def private_dir(path):
@@ -97,6 +122,7 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     binaries = args.bin_dir.expanduser().resolve(strict=True)
+    lean = lean_path(state)
 
     def executable(name):
         path = binaries / ('nucleus-' + name)
@@ -120,15 +146,24 @@ def main():
     if stat.S_IMODE(key.stat().st_mode) != 0o600:
         parser.error('key file must have mode 0600')
 
+    shell_description = SHELL_DESCRIPTION
+    if lean:
+        shell_description += (
+            ' Lean 4 with Mathlib is installed in the shared home: `lean <file>` elaborates a '
+            'file that begins with `import Mathlib`. The first import takes tens of seconds, so '
+            'pass a long timeout_ms.'
+        )
+
     programs = {
         'conversation': dict(executable=executable('conversation'), args=['--root', '/sessions'],
                              binds=[bind(state / 'sessions', '/sessions', True)]),
         'projects': dict(executable=executable('projects'),
                          args=['--root', '/projects', '--home', '/home', '--programs', '/programs',
-                               '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
-                               '--shell-arg', '--max-timeout-ms', '--shell-arg', '900000',
+                               '--env', 'PATH=/usr/local/bin:/usr/bin:/bin'] +
+                              (['--env', 'LEAN_PATH=' + lean] if lean else []) +
+                              ['--shell-arg', '--max-timeout-ms', '--shell-arg', '900000',
                                '--shell-arg', '--default-timeout-ms', '--shell-arg', '25000',
-                               '--shell-arg', '--description', '--shell-arg', SHELL_DESCRIPTION],
+                               '--shell-arg', '--description', '--shell-arg', shell_description],
                          binds=[bind(state / 'projects', '/projects', True), bind(state / 'home', '/home', True),
                                 bind(executable('project'), '/programs/nucleus-project'),
                                 bind(executable('shell'), '/programs/nucleus-shell')],
@@ -164,7 +199,7 @@ def main():
                                                     'also the working directory.'),
                                    dict(service='shell', endpoint='shell', env='local',
                                         resource=['projects'],
-                                        description=SHELL_DESCRIPTION)])],
+                                        description=shell_description)])],
                          binds=[bind(binaries, '/programs'), bind(state / 'projects', '/projects', True)]),
         'ui': dict(executable=executable('ui'), args=['--socket', '/ui/ui.sock'],
                    binds=[bind(state / 'ui', '/ui', True)]),
