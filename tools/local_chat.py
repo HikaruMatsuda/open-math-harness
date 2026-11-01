@@ -30,9 +30,13 @@ extracts what a quiet session leaves, consolidates it into that project's
 `memories/` and its job stores `memory-state/`, and it may reach the model for
 its own calls. `web` fetches URLs for the agent. `skills` is a host of the
 projects service like `shell`: the project repository's `.skill/` directory and
-published catalogues, which it downloads itself. Approvals are not part of it:
-the guard's decision needs a window holding `decide`, which this composition's
-UI does not have; deletion stays unavailable, not unguarded. Background jobs
+published catalogues, which it downloads itself. Approvals are part of it: the
+`approvals` guard holds `fs remove` over the projects (the sessions service only
+holds `request`), its policy asks a person for every removal, and the UI holds
+`list` and `decide` on `[]`, so deleting one file waits for a decision made in
+the window. The guard performs the recorded call itself, once. A shell can still
+`rm` a file: that is the deployment's own limit too, and the guard's prompt
+covers only calls made through it. Background jobs
 are part of it: the projects service serves `jobs` (`--jobs jobs-state/`) with a
 `conversation wake` grant, so an agent may start a command in the background and
 a person may move a running one there (`jobs.background`). A job's record and log
@@ -172,7 +176,8 @@ def main():
     os.set_inheritable(lock, True)
     try:
         for name in ('projects', 'home', 'sessions', 'ui', 'data', 'data/work', 'logs', 'secrets',
-                     'memories', 'memory-state', 'jobs-state', 'lean-scratch'):
+                     'memories', 'memory-state', 'jobs-state', 'lean-scratch', 'policy',
+                     'approvals-log'):
             private_dir(state / name)
     except ValueError as exc:
         parser.error(str(exc))
@@ -205,6 +210,18 @@ def main():
         f.write(text + '\n')
     if stat.S_IMODE(key.stat().st_mode) != 0o600:
         parser.error('key file must have mode 0600')
+
+    # Every removal the guard makes was asked for by a person. The guard reads
+    # this once at start and records its version in each pending request.
+    policy = state / 'policy' / 'approvals.json'
+    fd, tmp = tempfile.mkstemp(prefix='.approvals-', dir=state / 'policy')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump({'version': 1,
+                   'rules': [{'endpoint': 'fs', 'action': 'remove', 'resource': [], 'effect': 'ask'}]},
+                  f)
+        f.write('\n')
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, policy)
 
     shell_description = SHELL_DESCRIPTION
     if lean:
@@ -290,6 +307,11 @@ def main():
                               bind(executable('chat-agent'), '/programs/nucleus-chat-agent'),
                               bind(state / 'projects', '/projects')]),
         'web': dict(executable=executable('web'), args=[], network=True),
+        'approvals': dict(executable=executable('approvals'),
+                          args=['--policy', '/policy/approvals.json',
+                                '--log', '/log/approvals.jsonl'],
+                          binds=[bind(policy.parent, '/policy'),
+                                 bind(state / 'approvals-log', '/log', True)]),
         'chat': dict(executable=executable('chat-agent'),
                      args=['--model', args.model, '--max-steps', args.max_steps]),
         'sessions': dict(executable=executable('chat-agent'),
@@ -298,6 +320,7 @@ def main():
                                '--child-arg', '--max-steps', '--child-arg', args.max_steps,
                                '--projects', '/projects', '--repo-scope', 'fs',
                                '--repo-scope', 'shell', '--repo-scope', 'skills',
+                               '--repo-scope', 'approvals',
                                '--session-scope', 'jobs',
                                '--tool-bindings', json.dumps(tool_bindings)],
                          binds=[bind(binaries, '/programs'), bind(state / 'projects', '/projects', True)]),
@@ -342,6 +365,9 @@ def main():
             grant('memory_files', ['read', 'list', 'create', 'append', 'remove'], [], True)]),
         dict(program='web', provides='web',
              grants=[grant('kernel', ['provide'], ['endpoint', 'web'])]),
+        dict(program='approvals', provides='approvals', grants=[
+            grant('kernel', ['provide'], ['endpoint', 'approvals']),
+            grant('fs', ['remove'], ['projects'])]),
         *([dict(program='lean', provides='lean',
                 grants=[grant('kernel', ['provide'], ['endpoint', 'lean'])])] if lean_service else []),
         dict(program='sessions', provides='sessions', grants=[
@@ -356,6 +382,7 @@ def main():
             grant('skills', ['list', 'load'], ['projects'], True),
             grant('memory', ['index', 'used', 'remember'], [], True),
             grant('web', ['fetch', 'curl'], [], True),
+            grant('approvals', ['request'], ['fs', 'projects'], True),
             grant('jobs', ['register', 'list', 'output', 'stop'], [], True)] +
             ([grant('lean', ['statement', 'check', 'verify', 'analyze', 'complete'], [], True)]
              if lean_service else [])),
@@ -365,6 +392,7 @@ def main():
             grant('projects', ['list', 'create'], ['projects']),
             grant('files', ['list', 'mkdir', 'upload', 'download'], ['projects']),
             grant('diffs', ['repositories', 'changes', 'file'], ['projects']),
+            grant('approvals', ['list', 'decide'], []),
             grant('jobs', ['background'], [])]),
     ])
     config_path = state / 'chat-config.json'

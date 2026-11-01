@@ -35,6 +35,13 @@ def main():
     diff = commands.add_parser('diff', help='list the changed files of a project repository')
     diff.add_argument('repository')
     diff.add_argument('--after', help='pagination cursor')
+    approvals = commands.add_parser('approvals', help='list requests waiting for a decision')
+    approvals.add_argument('--after', type=int, help='pagination cursor')
+    approvals.add_argument('--limit', type=int, help='page size')
+    decide = commands.add_parser('decide', help='approve or deny one waiting request')
+    decide.add_argument('approval', type=int, help='request id from `approvals`')
+    decide.add_argument('digest', help='the digest the listing showed')
+    decide.add_argument('--deny', action='store_true', help='refuse the request instead of approving it')
     start = commands.add_parser('start')
     start.add_argument('--model')
     commands.add_parser('stop')
@@ -66,6 +73,15 @@ def main():
         request = {'op': 'diffs.changes', 'project': args.project, 'repository': args.repository}
         if args.after is not None:
             request['after'] = args.after
+    elif args.command == 'approvals':
+        request = {'op': 'approvals.list'}
+        if args.after is not None:
+            request['after'] = args.after
+        if args.limit is not None:
+            request['limit'] = args.limit
+    elif args.command == 'decide':
+        request = {'op': 'approvals.decide', 'approval': args.approval,
+                   'digest': args.digest, 'allow': not args.deny}
     elif args.command in ('start', 'stop'):
         request = {'op': 'sessions.create' if args.command == 'start' else 'sessions.stop',
                    'project': args.project, 'session': args.session}
