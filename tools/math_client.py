@@ -40,7 +40,7 @@ def main():
     say = commands.add_parser('say')
     say.add_argument('text')
     raw = commands.add_parser('request', help='send an explicit JSON UI request')
-    raw.add_argument('json')
+    raw.add_argument('json', help="JSON object, or '-' to read one object from stdin")
     args = parser.parse_args()
     if args.command == 'projects':
         request = {'op': 'projects.list'}
@@ -72,7 +72,7 @@ def main():
                    'message_id': uuid.uuid4().hex, 'text': args.text}
     else:
         try:
-            request = json.loads(args.json)
+            request = json.load(sys.stdin) if args.json == '-' else json.loads(args.json)
             if not isinstance(request, dict):
                 raise ValueError('request must be a JSON object')
         except ValueError as exc:

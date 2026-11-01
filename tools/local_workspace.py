@@ -73,7 +73,7 @@ def main():
         dict(program='ui', grants=[
             grant('conversation', ['say', 'history', 'wait', 'list', 'ensure'], []),
             grant('projects', ['list', 'create'], ['projects']),
-            grant('files', ['list', 'mkdir'], ['projects'])]),
+            grant('files', ['list', 'mkdir', 'upload', 'download'], ['projects'])]),
     ])
     config_path = state / 'workspace-config.json'
     fd, tmp = tempfile.mkstemp(prefix='.workspace-config-', dir=state)
