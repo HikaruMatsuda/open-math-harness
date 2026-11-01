@@ -22,6 +22,13 @@ def main():
     commands.add_parser('projects')
     create = commands.add_parser('create-project')
     create.add_argument('name')
+    files = commands.add_parser('files', help='list files in a project directory')
+    files.add_argument('dir', help='directory ID returned by projects')
+    files.add_argument('path', nargs='?', default='')
+    files.add_argument('--after', help='pagination cursor')
+    mkdir = commands.add_parser('mkdir', help='create a project directory')
+    mkdir.add_argument('dir', help='directory ID returned by projects')
+    mkdir.add_argument('path')
     commands.add_parser('sessions')
     commands.add_parser('live-sessions')
     start = commands.add_parser('start')
@@ -39,6 +46,12 @@ def main():
         request = {'op': 'projects.list'}
     elif args.command == 'create-project':
         request = {'op': 'projects.create', 'name': args.name}
+    elif args.command == 'files':
+        request = {'op': 'files.list', 'dir': args.dir, 'path': args.path}
+        if args.after is not None:
+            request['after'] = args.after
+    elif args.command == 'mkdir':
+        request = {'op': 'files.mkdir', 'dir': args.dir, 'path': args.path}
     elif args.command == 'sessions':
         request = {'op': 'conversation.list', 'project': args.project}
     elif args.command == 'live-sessions':
