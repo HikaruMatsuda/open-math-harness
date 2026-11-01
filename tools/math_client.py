@@ -3,6 +3,27 @@
 
 Requests are never retried: after a connection failure a mutation may have completed.
 The response is printed as JSON so errors and pagination cursors remain visible.
+
+Usage, where `<socket>` is the path `local_chat_start.py` printed
+(`~/open-math-run/chat/ui/ui.sock` in the VM):
+
+  CLIENT="python3 tools/math_client.py --socket <socket>"
+
+  $CLIENT --project demo --session chat1 say "2+2 を計算して"   # writes a turn, starts a
+                                                              # stopped session first
+  $CLIENT --project demo --session chat1 wait                  # waits for the reply
+  $CLIENT --project demo --session chat1 history               # user / assistant / tool / model_call
+  $CLIENT projects | create-project notes | files <dir> [path] | mkdir <dir> <name>
+  $CLIENT --project notes diffs | diff repo | files notes src
+  $CLIENT approvals                       # pending approvals, each with its digest
+  $CLIENT decide <id> <digest> [--deny]   # the digest must be the one just listed
+
+`say` starts a stopped session and never restarts a running one, so a turn in progress is
+not interrupted. `start` and `stop` act on a session explicitly. Everything except `fs
+remove`, which always asks, is available as `fs`, `shell` (bubblewrap, working directory
+the project's `repo/`), `skills`, `memory`, `web`, `jobs`, `diffs`, `lean` (frozen
+problems and the resident REPL), `approvals` and `pdf`. A `rm` run through `shell` does
+not pass the approval guard, the same limit the deployed composition has.
 """
 import argparse
 import json

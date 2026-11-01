@@ -188,6 +188,13 @@ def main():
     toolchain = lean_toolchain(state)
     repl = lean_repl(state)
     problems = HERE / 'local_problems'
+    # Each `<problem>.lean` in local_problems is the frozen statement its candidate is judged
+    # against: the file starts with the preamble a candidate must copy, and its theorem (named
+    # after the file) has the proof `sorry`. `nucleus-lean-checker` reads the directory bound at
+    # /problems, so a problem id is only that file name here. These are written for this local
+    # composition; they are not the PutnamBench set the deployed image carries under
+    # /opt/nucleus/problems. Add or replace a problem by adding `<problem>.lean` (letters, digits
+    # and `_`) and restarting the composition.
     lean_service = (lean is not None and toolchain is not None and repl is not None
                     and problems.is_dir())
 

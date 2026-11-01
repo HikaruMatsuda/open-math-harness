@@ -4,10 +4,30 @@
 It runs on the Mac and does three things, each only when it is not already done:
 opens a reverse tunnel for the model gateway onto the VM's loopback, copies the
 composition script into the VM, and starts the composition there in its own
-session. The socket path it prints is what `math_client.py --socket` takes.
+systemd --user unit. The socket path it prints is what `math_client.py --socket` takes.
+
+  local_chat_start.py            start what is not running, print the socket
+  local_chat_start.py --status   report without starting anything
+  local_chat_start.py --stop     stop the composition and close the tunnel
+
+`--status` reports `running`, `unit`, `unit_active` and `gateway_reachable`; all
+three of the first two being true means the documented client commands work.
+
+A unit installed as a file (`~/.config/systemd/user/<unit>.service`, enabled with
+linger) survives a VM restart and is started with `systemctl --user start`. When no
+such file exists the composition runs as a transient `systemd-run --user` unit,
+which lives only until the VM stops. `--unit` names it; the default is
+`open-math-chat-boot`.
+
+Inside the VM, state (history, projects, approvals) lives in `~/open-math-run/chat`
+and survives a restart; the composition is only ever replaced by an explicit
+start, never restarted underneath a running session.
 
 The gateway URL must be a loopback address on the Mac: the tunnel exposes it to
-the VM's loopback only, never to the VM's network interfaces.
+the VM's loopback only, never to the VM's network interfaces. The model id is
+pinned by `--model`; dropping the vendor prefix routes the call to another quota.
+Lean's REPL and toolchain are expected in the shared home of the VM; without them
+the composition omits the `lean` service instead of failing to start.
 """
 
 import argparse
@@ -53,6 +73,17 @@ def gateway_reachable(vm, url):
     return result.returncode == 0 and result.stdout.strip() in ('200', '401', '403')
 
 
+def unit_installed(vm, unit):
+    """True when `unit` is a unit file, so it can be enabled and survives a VM restart.
+
+    A transient `systemd-run --user` unit is loaded but not listed here; it is
+    reported as not installed because nothing restores it when the VM stops.
+    """
+    result = vm_run(vm, f'systemctl --user list-unit-files --no-legend {shlex.quote(unit)}.service',
+                    check=False)
+    return result.returncode == 0 and result.stdout.strip().startswith(unit)
+
+
 def open_tunnel(vm, host, port):
     config = ssh_config(vm)
     if config is None:
@@ -72,7 +103,7 @@ def main():
     parser.add_argument('--model', default='opencode-go/deepseek-v4.1-flash')
     parser.add_argument('--repo', default='~/open-math-harness', help='repository checkout inside the VM')
     parser.add_argument('--bin-dir', default='target/debug', help='built programs inside the VM checkout')
-    parser.add_argument('--unit', default='open-math-chat', help='systemd --user unit that keeps the composition')
+    parser.add_argument('--unit', default='open-math-chat-boot', help='systemd --user unit that keeps the composition')
     parser.add_argument('--memory-quiet-ms', default='300000',
                         help='how long a session must be quiet before its memories are extracted')
     parser.add_argument('--status', action='store_true', help='report what is running; start nothing')
@@ -109,6 +140,7 @@ def main():
     if args.status:
         print(json.dumps({'running': running, 'socket': shown_socket,
                           'unit': unit, 'unit_active': unit_state,
+                          'unit_installed': unit_installed(args.vm, unit),
                           'gateway_reachable': gateway_reachable(args.vm, args.model_base_url)}, indent=2))
         return 0
     if not gateway_reachable(args.vm, args.model_base_url):
@@ -131,17 +163,20 @@ def main():
                         f'cd {shlex.quote(repo)} && mkdir -p tools/local_problems && tar -x -C tools/local_problems'],
                        input=archive, check=True)
     if not running:
-        arguments = ' '.join([
-            '/usr/bin/python3 tools/local_chat.py',
-            '--bin-dir', shlex.quote(args.bin_dir),
-            '--state-dir', shlex.quote(state),
-            '--model-base-url', shlex.quote(args.model_base_url),
-            '--model', shlex.quote(args.model),
-            '--memory-quiet-ms', shlex.quote(args.memory_quiet_ms),
-        ])
-        command = (f'cd {shlex.quote(repo)} && systemd-run --user --unit={shlex.quote(unit)} --collect '
-                   f'--working-directory={shlex.quote(repo)} {arguments}')
-        started = vm_run(args.vm, command, check=False)
+        if unit_installed(args.vm, unit):
+            started = vm_run(args.vm, f'systemctl --user start {shlex.quote(unit)}', check=False)
+        else:
+            arguments = ' '.join([
+                '/usr/bin/python3 tools/local_chat.py',
+                '--bin-dir', shlex.quote(args.bin_dir),
+                '--state-dir', shlex.quote(state),
+                '--model-base-url', shlex.quote(args.model_base_url),
+                '--model', shlex.quote(args.model),
+                '--memory-quiet-ms', shlex.quote(args.memory_quiet_ms),
+            ])
+            command = (f'cd {shlex.quote(repo)} && systemd-run --user --unit={shlex.quote(unit)} --collect '
+                       f'--working-directory={shlex.quote(repo)} {arguments}')
+            started = vm_run(args.vm, command, check=False)
         if started.returncode != 0:
             print((started.stderr or started.stdout).strip(), file=sys.stderr)
             return 1
