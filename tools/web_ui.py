@@ -88,6 +88,17 @@ class Bridge:
         self.open = 0
         self.counter = 0
 
+    def warm(self, count=1):
+        """Open connections ahead of the first call: each one costs an SSH round trip."""
+        def open_some():
+            for _ in range(count):
+                try:
+                    connection = self._acquire()
+                except Exception:
+                    return
+                self._release(connection)
+        threading.Thread(target=open_some, daemon=True).start()
+
     def call(self, payload, timeout=60):
         with self.condition:
             self.counter += 1
@@ -624,6 +635,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     server.bridge = Bridge(args.vm, socket_path)
+    server.bridge.warm()
     print(f'http://{args.host}:{args.port}/  ->  {args.vm}:{socket_path}', flush=True)
     try:
         server.serve_forever()
