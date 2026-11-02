@@ -20,13 +20,14 @@ Open Math Harness is developed as the runtime of Open Math OS. We publish its so
 that its design and implementation can be inspected, studied and built on.
 
 > [!WARNING]
-> **The full runtime currently relies on the Open Math OS deployment environment.**
-> This repository supports building the runtime and running a small self-contained
-> example, but does not yet provide a standalone local setup for interactive agents
-> or proof search.
+> **Ultramath and proof search still rely on the Open Math OS deployment environment.**
+> This repository supports building the runtime, running a small self-contained example,
+> and running interactive agents with their tools, memory and Lean on one Linux host; see
+> [Run interactive agents locally](#run-interactive-agents-locally). The managed VM
+> configuration in `deploy/vm/` remains the supported multi-user setup.
 
-We plan to reduce these deployment dependencies and make individual components easier
-to run independently in future releases.
+We plan to reduce the remaining deployment dependencies and make individual components
+easier to run independently in future releases.
 
 ## What it runs
 
@@ -119,10 +120,9 @@ cargo build --locked --workspace
 
 This builds the launcher and service binaries into `target/debug/`.
 
-Running interactive agents additionally requires a service configuration, model provider
-credentials and a client. Proof search also requires a configured Lean and Mathlib
-environment. The files in `deploy/vm/` target the managed Open Math OS VM and are not
-a standalone installer for a personal machine.
+Proof search requires a configured Lean and Mathlib environment. The files in `deploy/vm/`
+target the managed Open Math OS VM and are not a standalone installer for a personal
+machine; the local composition below runs the same services on a host you control.
 
 ### Run the local example
 
@@ -144,6 +144,36 @@ calls it receives in `examples/slice/log/access.jsonl`.
 
 The example also creates `examples/slice/data/work/report.txt`. To repeat that creation
 successfully, remove the generated report before running the example again.
+
+### Run interactive agents locally
+
+`tools/local_chat.py` starts a composition for one user on one Linux machine: the
+conversation, projects, files, filesystem, model, sessions and UI services, and each
+session's agent with its tools — shell in bubblewrap, skills, memory, web, PDF, background
+jobs, diffs, approvals, and Lean when a Mathlib build and the Lean REPL are present. The
+agent works inside its project's `repo/`; state, including history, projects and approvals,
+lives in `~/open-math-run/chat`.
+
+On macOS, `tools/local_chat_start.py` drives a Lima VM. It opens a reverse tunnel that
+exposes the model gateway on the Mac's loopback to the VM's loopback only, copies the
+composition into the VM's checkout, starts it as a `systemd --user` unit, and prints the
+socket path. `--status` reports what is running; `--stop` stops it and closes the tunnel.
+
+```sh
+# the VM's checkout is built, and a model gateway answers on 127.0.0.1:10100
+python3 tools/local_chat_start.py
+python3 tools/web_ui.py            # http://127.0.0.1:8765/
+```
+
+`tools/web_ui.py` serves a small chat window over that socket: history, sending, and
+approval decisions. `tools/math_client.py` offers the same operations from the command
+line. Both leave the socket's permissions and the UI service's capability checks
+authoritative. The model is any OpenRouter-shaped endpoint the VM can reach; the start
+helper expects one on the Mac's loopback and pins the model id with `--model`.
+
+The local composition does not include Ultramath or proof search. Its composition and
+limits — the Lima transport, the optional Lean services, and the shell's `rm` not passing
+the approval guard — are documented in the tools' module docs.
 
 ## Development
 
